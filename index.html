@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>제약·헬스케어 뉴스 모니터링 대시보드</title>
+<style>
+  :root{
+    --bg:#f4f6f8; --card:#ffffff; --ink:#1f2430; --sub:#667085;
+    --accent:#2f6fed; --accent-soft:#eaf1ff; --border:#e6e9ee;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Malgun Gothic",sans-serif;
+    background:var(--bg); color:var(--ink); line-height:1.5;
+  }
+  header{
+    background:linear-gradient(135deg,#1f3a93,#2f6fed); color:#fff; padding:26px 28px;
+  }
+  header h1{ margin:0 0 6px; font-size:21px; }
+  header p{ margin:0; font-size:13px; opacity:.9; }
+  .controls{
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:16px;
+  }
+  .controls label{ font-size:12.5px; opacity:.9; }
+  .controls select, .controls button{
+    font-size:13px; padding:6px 10px; border-radius:6px; border:none; cursor:pointer;
+  }
+  .controls button{
+    background:#fff; color:var(--accent); font-weight:700;
+  }
+  .controls button:disabled{ opacity:.6; cursor:default; }
+  #status{ font-size:12px; opacity:.9; }
+  main{ max-width:1100px; margin:0 auto; padding:22px 20px 60px; }
+  .toc{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:24px; }
+  .toc a{
+    text-decoration:none; font-size:12.5px; color:var(--accent); background:var(--accent-soft);
+    padding:6px 12px; border-radius:20px; border:1px solid #d7e5ff;
+  }
+  .toc a:hover{ background:#dbe9ff; }
+  section.cat{
+    background:var(--card); border:1px solid var(--border); border-radius:12px;
+    padding:18px 20px; margin-bottom:16px; scroll-margin-top:12px;
+  }
+  .cat-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; flex-wrap:wrap; gap:8px;}
+  .cat-head h2{ font-size:16.5px; margin:0; display:flex; align-items:center; gap:8px;}
+  .badge{ display:inline-block; width:9px; height:9px; border-radius:50%; flex-shrink:0;}
+  .count{ font-size:11.5px; color:var(--sub); background:#f1f3f6; padding:3px 10px; border-radius:12px; white-space:nowrap;}
+  .kw-list{ font-size:11px; color:var(--sub); margin:-4px 0 10px; }
+  ul.articles{ list-style:none; margin:0; padding:0; }
+  ul.articles li{ padding:11px 0; border-bottom:1px solid #f0f2f5; }
+  ul.articles li:last-child{ border-bottom:none; }
+  ul.articles a.title{
+    color:var(--ink); text-decoration:none; font-size:14px; font-weight:600; display:block; margin-bottom:4px;
+  }
+  ul.articles a.title:hover{ color:var(--accent); text-decoration:underline; }
+  .row-meta{ display:flex; gap:10px; font-size:11.5px; color:var(--sub); flex-wrap:wrap; }
+  .row-meta .src{ font-weight:600; color:#475467; }
+  .row-meta .kw{ background:#f1f3f6; padding:1px 7px; border-radius:8px; }
+  .empty{ color:var(--sub); font-size:13px; padding:8px 0; font-style:italic; }
+  .err{ color:#b42318; font-size:12.5px; padding:6px 0; }
+  .skeleton{ height:14px; background:#eef0f3; border-radius:4px; margin:8px 0; animation:pulse 1.2s infinite; }
+  @keyframes pulse{ 0%{opacity:.6;} 50%{opacity:1;} 100%{opacity:.6;} }
+  footer{ text-align:center; font-size:11px; color:var(--sub); padding:20px 0 40px; }
+  footer code{ background:#eef0f3; padding:2px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>제약·헬스케어·의료정책 뉴스 모니터링 대시보드</h1>
+  <p>이 페이지에 접속할 때마다 Google 뉴스에서 최신 기사를 자동으로 불러옵니다.</p>
+  <div class="controls">
+    <label for="daysSel">검색 기간</label>
+    <select id="daysSel">
+      <option value="1">최근 1일</option>
+      <option value="2" selected>최근 2일</option>
+      <option value="3">최근 3일</option>
+      <option value="7">최근 7일</option>
+    </select>
+    <button id="refreshBtn">새로고침</button>
+    <span id="status">불러오는 중...</span>
+  </div>
+</header>
+
+<main>
+  <div class="toc" id="toc"></div>
+  <div id="catRoot"></div>
+</main>
+
+<footer>
+  Google 뉴스(news.google.com/rss) 검색 결과를 공개 CORS 프록시를 통해 브라우저에서 직접 불러옵니다.
+  일부 기사는 프록시 상태에 따라 누락될 수 있습니다. 검색 대상 카테고리·키워드는 이 파일 안의
+  <code>CATEGORIES</code> 배열을 수정해 자유롭게 바꿀 수 있습니다.
+</footer>
+
+<script>
+/* ===================== 검색 카테고리 / 키워드 설정 =====================
+   카테고리와 키워드를 자유롭게 추가/삭제/수정하세요.
+   keywords 항목은 Google 뉴스 검색어로 그대로 사용됩니다 (따옴표로 정확 일치 검색 가능). */
+const CATEGORIES = [
+  { id:'hanmi',        name:'한미약품 · 한미사이언스',        color:'#d64545', keywords:['"한미약품"','"한미사이언스"'] },
+  { id:'pharma',       name:'제약',                          color:'#2f6fed', keywords:['제약'] },
+  { id:'healthcare',   name:'헬스케어',                       color:'#0f9d58', keywords:['헬스케어'] },
+  { id:'policy',       name:'의료정책',                       color:'#e08e0b', keywords:['의료정책'] },
+  { id:'bitcomputer',  name:'비트컴퓨터',                     color:'#8b3fd1', keywords:['"비트컴퓨터"'] },
+  { id:'isis',         name:'이지스헬스케어',                 color:'#8b3fd1', keywords:['"이지스헬스케어"'] },
+  { id:'doccommunity', name:'의사 커뮤니티 · 미디어',          color:'#0a9396', keywords:['"키메디"','"인터엠디"','"메디게이트"'] },
+  { id:'docservice',   name:'의사 대상 서비스',                color:'#c2185b', keywords:['"유비케어"','"청년의사"','"메디칼타임즈"','"데일리메디"','"케어랩스"','"굿닥"','"똑닥"','"닥터플레이스"'] },
+  { id:'uisarang',     name:'의사랑 (EMR)',                   color:'#8b3fd1', keywords:['"의사랑" (EMR OR 프로그램)'] },
+];
+/* ======================================================================= */
+
+const CACHE_TTL_MS = 20 * 60 * 1000; // 20분 캐시 (동일 브라우저 재방문 시 프록시 부담 완화)
+
+function buildRssUrl(query, days){
+  const q = encodeURIComponent(`${query} when:${days}d`);
+  return `https://news.google.com/rss/search?q=${q}&hl=ko&gl=KR&ceid=KR:ko`;
+}
+
+function parseDate(s){
+  if(!s) return null;
+  let d = new Date(s);
+  if(!isNaN(d)) return d;
+  d = new Date(s.replace(' ', 'T') + 'Z');
+  return isNaN(d) ? null : d;
+}
+
+function guessSource(item){
+  if(item.author) return item.author;
+  const m = /(.*) - ([^-]+)$/.exec(item.title || '');
+  if(m) return m[2].trim();
+  try{ return new URL(item.link).hostname.replace('www.',''); }catch(e){ return '알수없음'; }
+}
+
+function cleanTitle(item, source){
+  if(!source) return item.title;
+  return (item.title || '').replace(new RegExp(` - ${source.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}$`), '').trim();
+}
+
+async function fetchViaRss2Json(rssUrl){
+  const api = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
+  const res = await fetch(api);
+  if(!res.ok) throw new Error('rss2json http ' + res.status);
+  const data = await res.json();
+  if(data.status !== 'ok') throw new Error('rss2json status');
+  return (data.items || []).map(it => {
+    const source = guessSource(it);
+    return { title: cleanTitle(it, source), link: it.link, date: parseDate(it.pubDate), source };
+  });
+}
+
+function parseXmlItems(text){
+  const doc = new DOMParser().parseFromString(text, 'text/xml');
+  if(doc.querySelector('parsererror')) throw new Error('xml parse error');
+  return [...doc.querySelectorAll('item')].map(node => {
+    const rawTitle = node.querySelector('title')?.textContent || '';
+    const sourceNode = node.querySelector('source')?.textContent;
+    const item = { title: rawTitle, link: node.querySelector('link')?.textContent || '', pubDate: node.querySelector('pubDate')?.textContent };
+    const source = sourceNode || guessSource(item);
+    return { title: cleanTitle(item, source), link: item.link, date: parseDate(item.pubDate), source };
+  });
+}
+
+async function fetchViaAllOrigins(rssUrl){
+  const api = `https://api.allorigins.win/raw?url=${encodeURIComponent(rssUrl)}`;
+  const res = await fetch(api);
+  if(!res.ok) throw new Error('allorigins http ' + res.status);
+  const text = await res.text();
+  const items = parseXmlItems(text);
+  if(items.length === 0 && text.length < 50) throw new Error('allorigins empty body');
+  return items;
+}
+
+async function fetchViaCorsProxyIo(rssUrl){
+  const api = `https://corsproxy.io/?url=${encodeURIComponent(rssUrl)}`;
+  const res = await fetch(api);
+  if(!res.ok) throw new Error('corsproxy.io http ' + res.status);
+  const text = await res.text();
+  const items = parseXmlItems(text);
+  if(items.length === 0 && text.length < 50) throw new Error('corsproxy.io empty body');
+  return items;
+}
+
+async function fetchViaDirect(rssUrl){
+  // 일부 환경(브라우저 확장/향후 CORS 허용 등)에서는 프록시 없이도 바로 될 수 있어 가장 먼저 시도
+  const res = await fetch(rssUrl, { mode: 'cors' });
+  if(!res.ok) throw new Error('direct http ' + res.status);
+  const text = await res.text();
+  return parseXmlItems(text);
+}
+
+const PROXY_CHAIN = [fetchViaDirect, fetchViaRss2Json, fetchViaAllOrigins, fetchViaCorsProxyIo];
+
+async function fetchKeyword(query, days){
+  const cacheKey = 'newsdash_' + query + '_' + days;
+  try{
+    const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+    if(cached && (Date.now() - cached.ts) < CACHE_TTL_MS){
+      return cached.items.map(it => ({...it, date: it.date ? new Date(it.date) : null}));
+    }
+  }catch(e){ /* ignore cache errors */ }
+
+  const rssUrl = buildRssUrl(query, days);
+  const errors = [];
+  let items = null;
+  for(const strategy of PROXY_CHAIN){
+    try{
+      items = await strategy(rssUrl);
+      if(items && items.length >= 0){ break; }
+    }catch(e){
+      errors.push(strategy.name + ': ' + e.message);
+    }
+  }
+  if(items === null){
+    throw new Error('모든 경로 실패 - ' + errors.join(' | '));
+  }
+  try{
+    localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), items }));
+  }catch(e){ /* storage full or disabled: ignore */ }
+  return items;
+}
+
+function relTime(d){
+  if(!d) return '';
+  const diffMs = Date.now() - d.getTime();
+  const h = Math.floor(diffMs / 3600000);
+  if(h < 1) return Math.max(1, Math.floor(diffMs/60000)) + '분 전';
+  if(h < 24) return h + '시간 전';
+  const days = Math.floor(h/24);
+  return days + '일 전';
+}
+
+async function runQueue(tasks, concurrency=4){
+  const results = [];
+  let i = 0;
+  async function worker(){
+    while(i < tasks.length){
+      const idx = i++;
+      results[idx] = await tasks[idx]().catch(err => ({ __error: err.message }));
+    }
+  }
+  await Promise.all(Array.from({length: Math.min(concurrency, tasks.length)}, worker));
+  return results;
+}
+
+function renderSkeleton(){
+  const root = document.getElementById('catRoot');
+  const toc = document.getElementById('toc');
+  root.innerHTML = '';
+  toc.innerHTML = '';
+  CATEGORIES.forEach(cat => {
+    const a = document.createElement('a');
+    a.href = '#' + cat.id;
+    a.textContent = cat.name;
+    toc.appendChild(a);
+
+    const sec = document.createElement('section');
+    sec.className = 'cat';
+    sec.id = cat.id;
+    sec.innerHTML = `
+      <div class="cat-head">
+        <h2><span class="badge" style="background:${cat.color}"></span>${cat.name}</h2>
+        <span class="count" id="count-${cat.id}">불러오는 중</span>
+      </div>
+      <div class="kw-list">검색 키워드: ${cat.keywords.map(k=>k.replace(/"/g,'')).join(', ')}</div>
+      <div id="body-${cat.id}">
+        <div class="skeleton" style="width:90%"></div>
+        <div class="skeleton" style="width:75%"></div>
+        <div class="skeleton" style="width:82%"></div>
+      </div>`;
+    root.appendChild(sec);
+  });
+}
+
+async function loadAll(){
+  const statusEl = document.getElementById('status');
+  const btn = document.getElementById('refreshBtn');
+  const days = parseInt(document.getElementById('daysSel').value, 10);
+  btn.disabled = true;
+  statusEl.textContent = '불러오는 중...';
+  renderSkeleton();
+
+  const cutoff = Date.now() - days * 24 * 3600 * 1000;
+
+  for(const cat of CATEGORIES){
+    const tasks = cat.keywords.map(kw => () => fetchKeyword(kw, days).then(items => ({ kw, items })));
+    const results = await runQueue(tasks, 4);
+
+    const bodyEl = document.getElementById('body-' + cat.id);
+    const countEl = document.getElementById('count-' + cat.id);
+
+    let merged = [];
+    let hadError = false;
+    results.forEach(r => {
+      if(r.__error){ hadError = true; return; }
+      r.items.forEach(it => merged.push({ ...it, kw: r.kw.replace(/"/g,'') }));
+    });
+
+    // 기간 필터 + 중복 제거(링크 기준) + 최신순 정렬
+    const seen = new Set();
+    merged = merged
+      .filter(it => it.date && it.date.getTime() >= cutoff)
+      .filter(it => { if(seen.has(it.link)) return false; seen.add(it.link); return true; })
+      .sort((a,b) => b.date - a.date);
+
+    countEl.textContent = merged.length + '건';
+
+    if(merged.length === 0){
+      bodyEl.innerHTML = `<div class="empty">선택한 기간 내 검색된 관련 뉴스가 없습니다.</div>` +
+        (hadError ? `<div class="err">일부 키워드 조회에 실패했습니다 (프록시 응답 지연/제한 가능성). 새로고침을 다시 시도해 보세요.</div>` : '');
+      continue;
+    }
+
+    const ul = document.createElement('ul');
+    ul.className = 'articles';
+    ul.innerHTML = merged.slice(0, 30).map(it => `
+      <li>
+        <a class="title" target="_blank" rel="noopener" href="${it.link}">${it.title}</a>
+        <div class="row-meta">
+          <span class="src">${it.source}</span>
+          <span>${relTime(it.date)}</span>
+          <span class="kw">#${it.kw}</span>
+        </div>
+      </li>`).join('');
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(ul);
+    if(hadError){
+      const e = document.createElement('div');
+      e.className = 'err';
+      e.textContent = '일부 키워드 조회에 실패해 결과가 누락될 수 있습니다.';
+      bodyEl.appendChild(e);
+    }
+  }
+
+  statusEl.textContent = '마지막 갱신: ' + new Date().toLocaleString('ko-KR');
+  btn.disabled = false;
+}
+
+document.getElementById('refreshBtn').addEventListener('click', loadAll);
+document.getElementById('daysSel').addEventListener('change', loadAll);
+window.addEventListener('DOMContentLoaded', loadAll);
+</script>
+</body>
+</html>
