@@ -31,16 +31,22 @@
   }
   .controls button:disabled{ opacity:.6; cursor:default; }
   #status{ font-size:12px; opacity:.9; }
-  main{ max-width:1100px; margin:0 auto; padding:22px 20px 60px; }
+  main{ max-width:1320px; margin:0 auto; padding:22px 20px 60px; }
   .toc{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:24px; }
   .toc a{
     text-decoration:none; font-size:12.5px; color:var(--accent); background:var(--accent-soft);
     padding:6px 12px; border-radius:20px; border:1px solid #d7e5ff;
   }
   .toc a:hover{ background:#dbe9ff; }
+  #catRoot{
+    display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start;
+  }
+  @media (max-width:800px){
+    #catRoot{ grid-template-columns:1fr; }
+  }
   section.cat{
     background:var(--card); border:1px solid var(--border); border-radius:12px;
-    padding:18px 20px; margin-bottom:16px; scroll-margin-top:12px;
+    padding:18px 20px; scroll-margin-top:12px; min-width:0;
   }
   .cat-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; flex-wrap:wrap; gap:8px;}
   .cat-head h2{ font-size:16.5px; margin:0; display:flex; align-items:center; gap:8px;}
@@ -52,6 +58,7 @@
   ul.articles li:last-child{ border-bottom:none; }
   ul.articles a.title{
     color:var(--ink); text-decoration:none; font-size:14px; font-weight:600; display:block; margin-bottom:4px;
+    word-break:break-word;
   }
   ul.articles a.title:hover{ color:var(--accent); text-decoration:underline; }
   .row-meta{ display:flex; gap:10px; font-size:11.5px; color:var(--sub); flex-wrap:wrap; }
@@ -99,6 +106,9 @@
    카테고리와 키워드를 자유롭게 추가/삭제/수정하세요.
    keywords 항목은 Google 뉴스 검색어로 그대로 사용됩니다 (따옴표로 정확 일치 검색 가능). */
 const CATEGORIES = [
+  { id:'daewoong',     name:'대웅',                          color:'#b5179e', keywords:['"대웅"','"대웅제약"'] },
+  { id:'mcircle',      name:'엠서클',                        color:'#7209b7', keywords:['"엠서클"'] },
+  { id:'doctorville',  name:'닥터빌',                        color:'#3a0ca3', keywords:['"닥터빌"'] },
   { id:'hanmi',        name:'한미약품 · 한미사이언스',        color:'#d64545', keywords:['"한미약품"','"한미사이언스"'] },
   { id:'pharma',       name:'제약',                          color:'#2f6fed', keywords:['제약'] },
   { id:'healthcare',   name:'헬스케어',                       color:'#0f9d58', keywords:['헬스케어'] },
@@ -112,6 +122,7 @@ const CATEGORIES = [
 /* ======================================================================= */
 
 const CACHE_TTL_MS = 20 * 60 * 1000; // 20분 캐시 (동일 브라우저 재방문 시 프록시 부담 완화)
+const MAX_ITEMS_PER_CATEGORY = 20; // 카테고리별 최대 노출 기사 수
 
 function buildRssUrl(query, days){
   const q = encodeURIComponent(`${query} when:${days}d`);
@@ -314,7 +325,7 @@ async function loadAll(){
 
     const ul = document.createElement('ul');
     ul.className = 'articles';
-    ul.innerHTML = merged.slice(0, 30).map(it => `
+    ul.innerHTML = merged.slice(0, MAX_ITEMS_PER_CATEGORY).map(it => `
       <li>
         <a class="title" target="_blank" rel="noopener" href="${it.link}">${it.title}</a>
         <div class="row-meta">
