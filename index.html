@@ -31,6 +31,20 @@
   }
   .controls button:disabled{ opacity:.6; cursor:default; }
   #status{ font-size:12px; opacity:.9; }
+  .subscribe-form{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:14px;
+    background:rgba(255,255,255,.12); padding:10px 14px; border-radius:8px;
+  }
+  .subscribe-form label{ font-size:12.5px; }
+  .subscribe-form input{
+    font-size:13px; padding:6px 10px; border-radius:6px; border:none; min-width:220px;
+  }
+  .subscribe-form button{
+    font-size:13px; padding:6px 14px; border-radius:6px; border:none; cursor:pointer;
+    background:#fff; color:var(--accent); font-weight:700;
+  }
+  .subscribe-form button:disabled{ opacity:.6; cursor:default; }
+  #subStatus{ font-size:12px; }
   main{ max-width:1320px; margin:0 auto; padding:22px 20px 60px; }
   .toc{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:24px; }
   .toc a{
@@ -88,6 +102,12 @@
     <button id="refreshBtn">새로고침</button>
     <span id="status">불러오는 중...</span>
   </div>
+  <form id="subscribeForm" class="subscribe-form">
+    <label for="subEmail">이메일로 뉴스 다이제스트 받기</label>
+    <input type="email" id="subEmail" placeholder="you@example.com" required>
+    <button type="submit" id="subBtn">등록</button>
+    <span id="subStatus"></span>
+  </form>
 </header>
 
 <main>
@@ -124,6 +144,39 @@ const CATEGORIES = [
 const CACHE_TTL_MS = 20 * 60 * 1000; // 20분 캐시 (동일 브라우저 재방문 시 프록시 부담 완화)
 const MAX_ITEMS_PER_CATEGORY = 20; // 카테고리별 최대 노출 기사 수
 
+/* Google Apps Script 웹앱 배포 후 발급되는 URL을 여기에 붙여넣으세요.
+   예: https://script.google.com/macros/s/AKfycb.../exec
+   (안내 문서의 배포 단계를 마치면 이 값을 채우면 이메일 등록 기능이 동작합니다) */
+const SUBSCRIBE_ENDPOINT = 'https://script.google.com/macros/s/AKfycbwteJOhwOg5xD7pg5ZhRr-CPDVIc35LxVMJ_cU72vKVF9YI6piSlviN3ScvoGOMGe0y/exec';
+
+/* ===================== 이메일 구독 (JSONP - CORS 우회) ===================== */
+function subscribeViaJsonp(email){
+  return new Promise((resolve, reject) => {
+    if(!SUBSCRIBE_ENDPOINT){
+      reject(new Error('SUBSCRIBE_ENDPOINT가 설정되지 않았습니다. Apps Script 배포 후 URL을 등록하세요.'));
+      return;
+    }
+    const cbName = 'subCb_' + Date.now() + '_' + Math.floor(Math.random()*10000);
+    const script = document.createElement('script');
+    const cleanup = () => { delete window[cbName]; script.remove(); };
+    const timer = setTimeout(() => { cleanup(); reject(new Error('응답 시간이 초과되었습니다.')); }, 10000);
+
+    window[cbName] = (result) => {
+      clearTimeout(timer);
+      cleanup();
+      resolve(result);
+    };
+    script.onerror = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(new Error('요청에 실패했습니다.'));
+    };
+    const url = `${SUBSCRIBE_ENDPOINT}?action=subscribe&email=${encodeURIComponent(email)}&callback=${cbName}`;
+    script.src = url;
+    document.body.appendChild(script);
+  });
+}
+
 function buildRssUrl(query, days){
   const q = encodeURIComponent(`${query} when:${days}d`);
   return `https://news.google.com/rss/search?q=${q}&hl=ko&gl=KR&ceid=KR:ko`;
@@ -149,9 +202,21 @@ function cleanTitle(item, source){
   return (item.title || '').replace(new RegExp(` - ${source.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}$`), '').trim();
 }
 
+const PROXY_TIMEOUT_MS = 7000; // 프록시 1건당 최대 대기시간 - 느린 프록시에 발목 잡히지 않도록 제한
+
+async function fetchWithTimeout(url, ms){
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try{
+    return await fetch(url, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function fetchViaRss2Json(rssUrl){
   const api = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
-  const res = await fetch(api);
+  const res = await fetchWithTimeout(api, PROXY_TIMEOUT_MS);
   if(!res.ok) throw new Error('rss2json http ' + res.status);
   const data = await res.json();
   if(data.status !== 'ok') throw new Error('rss2json status');
@@ -175,7 +240,7 @@ function parseXmlItems(text){
 
 async function fetchViaAllOrigins(rssUrl){
   const api = `https://api.allorigins.win/raw?url=${encodeURIComponent(rssUrl)}`;
-  const res = await fetch(api);
+  const res = await fetchWithTimeout(api, PROXY_TIMEOUT_MS);
   if(!res.ok) throw new Error('allorigins http ' + res.status);
   const text = await res.text();
   const items = parseXmlItems(text);
@@ -185,7 +250,7 @@ async function fetchViaAllOrigins(rssUrl){
 
 async function fetchViaCorsProxyIo(rssUrl){
   const api = `https://corsproxy.io/?url=${encodeURIComponent(rssUrl)}`;
-  const res = await fetch(api);
+  const res = await fetchWithTimeout(api, PROXY_TIMEOUT_MS);
   if(!res.ok) throw new Error('corsproxy.io http ' + res.status);
   const text = await res.text();
   const items = parseXmlItems(text);
@@ -193,15 +258,21 @@ async function fetchViaCorsProxyIo(rssUrl){
   return items;
 }
 
-async function fetchViaDirect(rssUrl){
-  // 일부 환경(브라우저 확장/향후 CORS 허용 등)에서는 프록시 없이도 바로 될 수 있어 가장 먼저 시도
-  const res = await fetch(rssUrl, { mode: 'cors' });
-  if(!res.ok) throw new Error('direct http ' + res.status);
-  const text = await res.text();
-  return parseXmlItems(text);
+// 전역 동시 요청 수 제한(세마포어) - 프록시가 과부하로 느려지는 것을 방지
+class Semaphore{
+  constructor(max){ this.max = max; this.cur = 0; this.queue = []; }
+  acquire(){
+    return new Promise(resolve => {
+      const tryGo = () => {
+        if(this.cur < this.max){ this.cur++; resolve(() => this._release()); }
+        else this.queue.push(tryGo);
+      };
+      tryGo();
+    });
+  }
+  _release(){ this.cur--; const next = this.queue.shift(); if(next) next(); }
 }
-
-const PROXY_CHAIN = [fetchViaDirect, fetchViaRss2Json, fetchViaAllOrigins, fetchViaCorsProxyIo];
+const KEYWORD_SEMAPHORE = new Semaphore(6); // 동시에 처리할 키워드 수
 
 async function fetchKeyword(query, days){
   const cacheKey = 'newsdash_' + query + '_' + days;
@@ -212,24 +283,24 @@ async function fetchKeyword(query, days){
     }
   }catch(e){ /* ignore cache errors */ }
 
-  const rssUrl = buildRssUrl(query, days);
-  const errors = [];
-  let items = null;
-  for(const strategy of PROXY_CHAIN){
-    try{
-      items = await strategy(rssUrl);
-      if(items && items.length >= 0){ break; }
-    }catch(e){
-      errors.push(strategy.name + ': ' + e.message);
-    }
-  }
-  if(items === null){
-    throw new Error('모든 경로 실패 - ' + errors.join(' | '));
-  }
+  const release = await KEYWORD_SEMAPHORE.acquire();
   try{
-    localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), items }));
-  }catch(e){ /* storage full or disabled: ignore */ }
-  return items;
+    const rssUrl = buildRssUrl(query, days);
+    let items;
+    try{
+      // 두 프록시를 동시에 시도해 먼저 성공하는 쪽을 사용 (순차 대비 대폭 단축)
+      items = await Promise.any([fetchViaRss2Json(rssUrl), fetchViaAllOrigins(rssUrl)]);
+    }catch(e1){
+      // 둘 다 실패한 경우에만 마지막 대안 시도
+      items = await fetchViaCorsProxyIo(rssUrl);
+    }
+    try{
+      localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), items }));
+    }catch(e){ /* storage full or disabled: ignore */ }
+    return items;
+  } finally {
+    release();
+  }
 }
 
 function relTime(d){
@@ -284,6 +355,57 @@ function renderSkeleton(){
   });
 }
 
+async function processCategory(cat, days, cutoff){
+  const tasks = cat.keywords.map(kw => () => fetchKeyword(kw, days).then(items => ({ kw, items })));
+  // 카테고리 내 키워드는 모두 동시에 요청 (실제 동시성 상한은 전역 세마포어가 처리)
+  const results = await runQueue(tasks, tasks.length || 1);
+
+  const bodyEl = document.getElementById('body-' + cat.id);
+  const countEl = document.getElementById('count-' + cat.id);
+
+  let merged = [];
+  let hadError = false;
+  results.forEach(r => {
+    if(r.__error){ hadError = true; return; }
+    r.items.forEach(it => merged.push({ ...it, kw: r.kw.replace(/"/g,'') }));
+  });
+
+  // 기간 필터 + 중복 제거(링크 기준) + 최신순 정렬
+  const seen = new Set();
+  merged = merged
+    .filter(it => it.date && it.date.getTime() >= cutoff)
+    .filter(it => { if(seen.has(it.link)) return false; seen.add(it.link); return true; })
+    .sort((a,b) => b.date - a.date);
+
+  countEl.textContent = merged.length + '건';
+
+  if(merged.length === 0){
+    bodyEl.innerHTML = `<div class="empty">선택한 기간 내 검색된 관련 뉴스가 없습니다.</div>` +
+      (hadError ? `<div class="err">일부 키워드 조회에 실패했습니다 (프록시 응답 지연/제한 가능성). 새로고침을 다시 시도해 보세요.</div>` : '');
+    return;
+  }
+
+  const ul = document.createElement('ul');
+  ul.className = 'articles';
+  ul.innerHTML = merged.slice(0, MAX_ITEMS_PER_CATEGORY).map(it => `
+    <li>
+      <a class="title" target="_blank" rel="noopener" href="${it.link}">${it.title}</a>
+      <div class="row-meta">
+        <span class="src">${it.source}</span>
+        <span>${relTime(it.date)}</span>
+        <span class="kw">#${it.kw}</span>
+      </div>
+    </li>`).join('');
+  bodyEl.innerHTML = '';
+  bodyEl.appendChild(ul);
+  if(hadError){
+    const e = document.createElement('div');
+    e.className = 'err';
+    e.textContent = '일부 키워드 조회에 실패해 결과가 누락될 수 있습니다.';
+    bodyEl.appendChild(e);
+  }
+}
+
 async function loadAll(){
   const statusEl = document.getElementById('status');
   const btn = document.getElementById('refreshBtn');
@@ -294,55 +416,8 @@ async function loadAll(){
 
   const cutoff = Date.now() - days * 24 * 3600 * 1000;
 
-  for(const cat of CATEGORIES){
-    const tasks = cat.keywords.map(kw => () => fetchKeyword(kw, days).then(items => ({ kw, items })));
-    const results = await runQueue(tasks, 4);
-
-    const bodyEl = document.getElementById('body-' + cat.id);
-    const countEl = document.getElementById('count-' + cat.id);
-
-    let merged = [];
-    let hadError = false;
-    results.forEach(r => {
-      if(r.__error){ hadError = true; return; }
-      r.items.forEach(it => merged.push({ ...it, kw: r.kw.replace(/"/g,'') }));
-    });
-
-    // 기간 필터 + 중복 제거(링크 기준) + 최신순 정렬
-    const seen = new Set();
-    merged = merged
-      .filter(it => it.date && it.date.getTime() >= cutoff)
-      .filter(it => { if(seen.has(it.link)) return false; seen.add(it.link); return true; })
-      .sort((a,b) => b.date - a.date);
-
-    countEl.textContent = merged.length + '건';
-
-    if(merged.length === 0){
-      bodyEl.innerHTML = `<div class="empty">선택한 기간 내 검색된 관련 뉴스가 없습니다.</div>` +
-        (hadError ? `<div class="err">일부 키워드 조회에 실패했습니다 (프록시 응답 지연/제한 가능성). 새로고침을 다시 시도해 보세요.</div>` : '');
-      continue;
-    }
-
-    const ul = document.createElement('ul');
-    ul.className = 'articles';
-    ul.innerHTML = merged.slice(0, MAX_ITEMS_PER_CATEGORY).map(it => `
-      <li>
-        <a class="title" target="_blank" rel="noopener" href="${it.link}">${it.title}</a>
-        <div class="row-meta">
-          <span class="src">${it.source}</span>
-          <span>${relTime(it.date)}</span>
-          <span class="kw">#${it.kw}</span>
-        </div>
-      </li>`).join('');
-    bodyEl.innerHTML = '';
-    bodyEl.appendChild(ul);
-    if(hadError){
-      const e = document.createElement('div');
-      e.className = 'err';
-      e.textContent = '일부 키워드 조회에 실패해 결과가 누락될 수 있습니다.';
-      bodyEl.appendChild(e);
-    }
-  }
+  // 카테고리를 모두 동시에 처리 - 카테고리별로 준비되는 즉시 화면에 반영됨
+  await Promise.all(CATEGORIES.map(cat => processCategory(cat, days, cutoff)));
 
   statusEl.textContent = '마지막 갱신: ' + new Date().toLocaleString('ko-KR');
   btn.disabled = false;
@@ -351,6 +426,25 @@ async function loadAll(){
 document.getElementById('refreshBtn').addEventListener('click', loadAll);
 document.getElementById('daysSel').addEventListener('change', loadAll);
 window.addEventListener('DOMContentLoaded', loadAll);
+
+document.getElementById('subscribeForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('subEmail');
+  const btn = document.getElementById('subBtn');
+  const statusEl = document.getElementById('subStatus');
+  const email = input.value.trim();
+  btn.disabled = true;
+  statusEl.textContent = '등록 중...';
+  try{
+    const result = await subscribeViaJsonp(email);
+    statusEl.textContent = result.message || (result.ok ? '등록되었습니다.' : '등록에 실패했습니다.');
+    if(result.ok) input.value = '';
+  }catch(err){
+    statusEl.textContent = '오류: ' + err.message;
+  }finally{
+    btn.disabled = false;
+  }
+});
 </script>
 </body>
 </html>
